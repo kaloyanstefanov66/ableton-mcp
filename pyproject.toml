@@ -1,0 +1,36 @@
+[project]
+name = "ableton-mcp"
+version = "0.1.0"
+description = "MCP server that lets Claude understand and edit Ableton Live sets: structure, mixer, devices, MIDI/audio analysis, timing-aware part writing (Live Lite included)"
+license = { text = "MIT" }
+keywords = ["mcp", "ableton", "ableton-live", "claude", "midi", "music"]
+readme = "README.md"
+# basic-pitch uses the lightweight ONNX runtime on Windows only below Python 3.11;
+# on 3.11+ it pulls in TensorFlow instead.
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "mcp>=2.3,<3",
+    "mido>=1.3",
+    "basic-pitch==0.4.0",
+    "soundfile>=0.12",
+    "setuptools<81",  # resampy (via basic-pitch) still imports pkg_resources
+]
+
+[project.urls]
+Repository = "https://github.com/kaloyanstefanov66/ableton-mcp"
+
+[project.scripts]
+ableton-mcp = "ableton_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ableton_mcp"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
