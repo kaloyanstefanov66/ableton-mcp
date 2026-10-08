@@ -157,12 +157,26 @@ returns `in_range.active` (with active bar runs per track) and `in_range.silent`
 `analyze_midi_clip("t4/a0")` gives `form.rhythm_changes` and a `rhythm_only` letter string like
 `"aaaabbbbaaaa"`.
 
-**"Is my riff in time?"** → `analyze_audio_clip("t2/a0", ["timing"])`:
+**"Is my riff in time?"** → `analyze_audio_clip("t2/a0", ["timing"], start_bar=84, end_bar=95)`
+(a real distorted-guitar take recorded without a click):
 ```json
-{"timing": {"performed_bpm": 127.6, "project_bpm": 120, "tempo_deviation_pct": 6.3,
-            "pulse": "1/8", "confidence": 0.86, "followable": true,
-            "summary": "played at ~127.6 BPM vs project 120 (+6.3%), pulse 1/8; ends 1150 ms ahead of Live's grid",
-            "drift_ms": {"bars": [84, 85, "..."], "ms": [-40, -95, "..."]}}}
+{"timing": {"performed_bpm": 128.9, "project_bpm": 120.0, "tempo_deviation_pct": 7.5,
+            "pulse": "1/8", "confidence": 0.82, "followable": true,
+            "regions": [{"bars": [84, 90], "followable": true, "confidence": 0.9},
+                        {"bars": [91, 93], "followable": false, "confidence": 0.58},
+                        {"bars": [94, 95], "followable": true, "confidence": 0.93}],
+            "summary": "played at ~128.9 BPM vs project 120 (+7.5%), pulse 1/8; ends 1441 ms ahead of Live's grid"}}
+```
+Writing kicks on the grid with `follow_timing="t2/a0"` then placed them at beats 0.133, 0.605, 1.077 …,
+on the guitar's actual attacks (0.14, 0.60, 1.12), ending a beat ahead of the grid like the take does.
+
+**"What does the drum part do?"** → `analyze_midi_clip("t3/a0")` → `drums.sections` (same session):
+```json
+[{"bars": [84, 89], "feel": "backbeat", "timekeeper": "ride"},
+ {"bars": [91, 94], "feel": "backbeat", "timekeeper": "crash"},
+ {"bars": [96, 97], "feel": "half-time", "timekeeper": "china"},
+ {"bars": [103, 104], "feel": "busy/fill", "timekeeper": "none"},
+ {"bars": [105, 105], "feel": "no snare", "timekeeper": "crash"}]
 ```
 
 **"Write Pantera-style drums that follow my take"** (with the `ableton-drums` skill):

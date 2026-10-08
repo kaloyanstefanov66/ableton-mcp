@@ -89,6 +89,29 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
     return len(a & b) / len(a | b)
 
 
+def fuzzy_rhythm_sim(a: frozenset, b: frozenset, steps: int | None = None) -> float:
+    """Rhythm similarity that tolerates onsets moving by one 16th step, so parts that slowly
+    drift against the grid (played live, or following a recording) still match bar to bar."""
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+
+    def near(s, other):
+        return any(abs(s - o) <= 1 or (steps and abs(s - o) >= steps - 1) for o in other)
+
+    matched = sum(near(s, b) for s in a) + sum(near(s, a) for s in b)
+    return matched / (len(a) + len(b))
+
+
+def rhythm_changed(a: frozenset, b: frozenset, steps: int | None = None) -> bool:
+    """A real rhythm change: onsets moved by more than a step, or their count jumped 1.5x."""
+    if fuzzy_rhythm_sim(a, b, steps) < 0.6:
+        return True
+    lo, hi = sorted((len(a), len(b)))
+    return hi >= 3 and hi >= 1.5 * max(1, lo)
+
+
 def _letters(fps: list[frozenset], threshold: float, upper: bool) -> list[str]:
     reps: list[tuple[frozenset, str]] = []
     out = []
@@ -171,22 +194,27 @@ def grid_feel(onsets: list[float], tempo: float) -> dict:
             **({"swing_pct": swing} if swing else {})}
 
 
-def _feel(snare_pos: list[float], bpb: float) -> str:
+def _feel(snare_pos: list[float], bpb: float, next_bar_first: float | None = None) -> str:
+    """Classify a bar from its accented snare hits (positions in beats from the bar start).
+
+    Uses spacing between hits, not absolute beat positions, so parts that follow a
+    drifting performance (off Live's grid) still read as backbeat / half-time.
+    """
     if not snare_pos:
         return "no snare"
-    beats = Counter(int(round(p)) for p in snare_pos if abs(p - round(p)) < 0.13)
-    n_bar = round(bpb)
-    total = len(snare_pos)
-    on2_4 = beats.get(1, 0) + beats.get(3, 0)
-    on3 = beats.get(2, 0)
-    off_beat = total - sum(beats.values())
-    if total >= 6 and off_beat / total > 0.5:
+    hits = sorted(snare_pos)
+    total = len(hits)
+    gaps = [b - a for a, b in zip(hits, hits[1:])]
+    if total >= 5 and median(gaps) <= 0.5:
         return "busy/fill"
-    if n_bar >= 4 and on3 / total >= 0.6 and on2_4 / total < 0.25:
-        return "half-time"
-    if on2_4 / total >= 0.6:
+    if total == 1:
+        # one hit: half-time unless the next snare comes back within half a bar
+        if next_bar_first is None or bpb - hits[0] + next_bar_first >= 0.75 * bpb:
+            return "half-time"
+        return "syncopated"
+    if gaps and all(abs(g - bpb / 2) <= 0.6 for g in gaps):
         return "backbeat"
-    if len(beats) >= n_bar and total >= n_bar:
+    if total >= round(bpb) and gaps and all(abs(g - 1) <= 0.3 for g in gaps):
         return "every beat"
     return "syncopated"
 
@@ -215,11 +243,13 @@ def drums(notes: list[dict], pads: dict[int, str] | None, bpb: float, bars: list
                      "pads": sorted({(pads or {}).get(n["pitch"]) or str(n["pitch"]) for n in ns})}
     # per-bar feel and timekeeper, collapsed into runs
     feel, keeper = [], []
+    accented = sorted(n["start"] for n in by_voice.get("snare", []) + by_voice.get("clap", [])
+                      if n["velocity"] >= 60)
     for b in bars:
         lo, hi = bar_start(b, bpb), bar_start(b + 1, bpb)
-        sn = [n["start"] - lo for n in by_voice.get("snare", []) + by_voice.get("clap", [])
-              if lo <= n["start"] < hi]
-        feel.append(_feel(sn, bpb) if any(lo <= n["start"] < hi for n in notes) else "empty")
+        sn = [t - lo for t in accented if lo <= t < hi]
+        nxt = next((t - hi for t in accented if hi <= t < hi + bpb), None)
+        feel.append(_feel(sn, bpb, nxt) if any(lo <= n["start"] < hi for n in notes) else "empty")
         counts = {v: sum(1 for n in by_voice.get(v, []) if lo <= n["start"] < hi) for v in TIMEKEEPERS}
         top = max(counts, key=counts.get)
         keeper.append(top if counts[top] else "none")
@@ -311,7 +341,8 @@ def analyze_clip(notes: list[dict], bpb: float, tempo: float, *, pads: dict[int,
     for i, b in enumerate(bars):
         if rletters[i] == "-":
             continue
-        if prev is not None and rletters[i] != rletters[prev]:
+        if prev is not None and rletters[i] != rletters[prev] and \
+                rhythm_changed(fp_rhythm[i], fp_rhythm[prev], steps):
             changes.append({"bar": b, "from": rletters[prev], "to": rletters[i],
                             "onsets": [len(fp_rhythm[prev]), len(fp_rhythm[i])]})
         prev = i
@@ -340,6 +371,10 @@ def analyze_clip(notes: list[dict], bpb: float, tempo: float, *, pads: dict[int,
                  "phrases": phrases[:24],
                  "rhythm_changes": changes[:16]},
     }
+    if out["grid"]["dominant"] == "unquantized" and out["grid"]["mean_deviation_ms"] > 20:
+        out["form"]["note"] = ("notes sit well off Live's grid (played live, or following a "
+                               "recording), so bar letters split repeats that are musically the "
+                               "same; rely on drums.sections, density and rhythm_changes instead")
     if is_drums or pads:
         out["drums"] = drums(notes, pads, bpb, bars, first)
     else:

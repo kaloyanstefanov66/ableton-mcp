@@ -386,7 +386,8 @@ def song_view(song):
                  "length": r4(g(song, "loop_length", 0.0))},
     }
     root, scale = g(song, "root_note"), g(song, "scale_name")
-    if root is not None and scale:
+    # Live always has a root/scale (default C Major); it only means something with Scale Mode on.
+    if root is not None and scale and g(song, "scale_mode", True):
         d["key"] = {"root": int(root), "scale": scale}
     d["locators"] = sorted(({"name": g(c, "name"), "time": r4(g(c, "time"))}
                             for c in g(song, "cue_points", []) or []),

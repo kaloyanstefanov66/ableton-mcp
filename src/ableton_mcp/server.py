@@ -173,7 +173,8 @@ def _audio_features(ct: ClipTime, bpb: float) -> tuple[dict, list[int]]:
 def _pulse(ct: ClipTime, bpb: float) -> audio_analysis.Pulse | None:
     feats, _ = _audio_features(ct, bpb)
     onsets = [ct.origin() + ct.to_beats(s) for s in feats["onsets_s"]]
-    return audio_analysis.estimate_pulse(onsets, ct.clip["song_tempo"])
+    return audio_analysis.estimate_pulse(onsets, ct.clip["song_tempo"],
+                                         strengths=feats.get("onset_strength"))
 
 
 def _follow(notes: list[dict], follow_clip: str, target_song_start: float | None) -> tuple[list[dict], dict]:
@@ -181,11 +182,10 @@ def _follow(notes: list[dict], follow_clip: str, target_song_start: float | None
     bpb = _beats_per_bar()
     ct = _clip_time(refs.parse_clip(follow_clip))
     pulse = _pulse(ct, bpb)
-    if pulse is None or pulse.confidence < audio_analysis.FOLLOW_MIN_CONFIDENCE:
-        conf = pulse.confidence if pulse else 0
-        raise ValueError(f"can't follow {follow_clip}: pulse confidence {conf} (< "
-                         f"{audio_analysis.FOLLOW_MIN_CONFIDENCE}). Check analyze_audio_clip("
-                         f"'{follow_clip}', ['timing']) or write on the grid instead.")
+    hint = (f"Check analyze_audio_clip('{follow_clip}', ['timing']) for which bars are clear, "
+            "or write on the grid instead.")
+    if pulse is None:
+        raise ValueError(f"can't follow {follow_clip}: too few clear onsets. {hint}")
     base = (target_song_start if target_song_start is not None else ct.song_start) \
         if ct.song_start is not None else 0.0
     out = []
@@ -194,8 +194,15 @@ def _follow(notes: list[dict], follow_clip: str, target_song_start: float | None
         e = pulse.to_actual(base + n["start"] + n["duration"]) - base
         s = max(0.0, s)
         out.append({**n, "start": round(s, 4), "duration": round(max(0.01, e - s), 4)})
+    lo = base + min((n["start"] for n in out), default=0.0)
+    hi = base + max((n["start"] + n["duration"] for n in out), default=0.0)
+    conf = pulse.region_confidence(lo, hi)
+    if conf < audio_analysis.FOLLOW_MIN_CONFIDENCE:
+        raise ValueError(f"can't follow {follow_clip} over bars {refs.bar_of(lo, bpb)}-"
+                         f"{refs.end_bar(hi, bpb)}: pulse confidence {conf} there (< "
+                         f"{audio_analysis.FOLLOW_MIN_CONFIDENCE}). {hint}")
     return out, {"followed": follow_clip, "performed_bpm": round(pulse.performed_bpm, 1),
-                 "pulse": pulse.tick_label, "confidence": pulse.confidence}
+                 "pulse": pulse.tick_label, "confidence": conf}
 
 
 # ------------------------------------------------------------------ reading
@@ -670,8 +677,13 @@ def analyze_audio_clip(clip_id: str,
         per["low_pct"], per["mid_pct"], per["high_pct"] = col("low_pct"), col("mid_pct"), col("high_pct")
         per["centroid_hz"] = col("centroid_hz")
     if "timing" in wanted:
-        onsets = [ct.origin() + ct.to_beats(s) for s in feats["onsets_s"]]
-        pulse = audio_analysis.estimate_pulse(onsets, ct.clip["song_tempo"])
+        pairs = [(ct.origin() + ct.to_beats(s), st)
+                 for s, st in zip(feats["onsets_s"], feats.get("onset_strength") or [])]
+        pairs = [(o, st) for o, st in pairs
+                 if (start_bar is None or refs.bar_of(o, bpb) >= start_bar)
+                 and (end_bar is None or refs.bar_of(o, bpb) <= end_bar)]
+        pulse = audio_analysis.estimate_pulse([o for o, _ in pairs], ct.clip["song_tempo"],
+                                              strengths=[st for _, st in pairs])
         out["timing"] = audio_analysis.timing_report(pulse, lambda beat: refs.bar_of(beat, bpb), bpb)
     out["per_bar"] = per
     return out

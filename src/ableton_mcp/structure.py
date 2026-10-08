@@ -8,10 +8,10 @@ Everything works on a bar grid. Inputs are already in song time:
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from statistics import mean
 
-from .midi_analysis import STEP, _jaccard, _letters
+from .midi_analysis import STEP, _jaccard, _letters, rhythm_changed
 from . import refs
 from .refs import bar_of, bar_start
 
@@ -64,6 +64,7 @@ def bar_grid(tracks, notes_by_track, audio_by_track, bpb, first, last):
             rows[b] = {"cov": cov, "notes": len(ns), "active": active,
                        "rhythm": frozenset(s for s, _ in rel),
                        "pitch": frozenset((s, n["pitch"]) for s, n in rel),
+                       "pitch_counts": dict(Counter(n["pitch"] for n in ns)),
                        "rms_db": a["rms_db"] if a else None,
                        "onsets": a["onsets"] if a else None}
         grid[tid] = rows
@@ -77,22 +78,40 @@ def _density(row: dict, peak: float) -> float:
 
 def _boundaries(tracks, grid, bars, bpb):
     peaks = {}
-    for t in tracks:
+    # Only tracks that play somewhere in range vote; empty tracks would dilute every change.
+    present = [t for t in tracks if any(grid[t["id"]][b]["active"] for b in bars)] or tracks
+    feats = {}
+    for t in present:
         rows = grid[t["id"]]
-        peaks[t["id"]] = max((r["notes"] if r["onsets"] is None else r["onsets"]) for r in rows.values()) or 0
-    vec = {b: [x for t in tracks for x in (float(grid[t["id"]][b]["active"]),
-                                           _density(grid[t["id"]][b], peaks[t["id"]]))]
-           for b in bars}
-    n = max(1, len(tracks))
+        peak = max((r["notes"] if r["onsets"] is None else r["onsets"]) for r in rows.values()) or 0
+        totals = defaultdict(int)
+        for b in bars:
+            for p, c in rows[b]["pitch_counts"].items():
+                totals[p] += c
+        top = sorted(totals, key=lambda p: -totals[p])[:12]  # instrument/voice mix (drums: kit pieces)
+        per_bar = {}
+        for b in bars:
+            r = rows[b]
+            pc = r["pitch_counts"]
+            n = sum(pc.get(p, 0) for p in top) or 1
+            per_bar[b] = [float(r["active"]), _density(r, peak)] + [pc.get(p, 0) / n for p in top]
+        feats[t["id"]] = per_bar
+
+    def window_mean(tid, lo, hi):
+        rows = [feats[tid][x] for x in bars[lo:hi]]
+        return [mean(c) for c in zip(*rows)]
+
     scores = {}
     for i, b in enumerate(bars[1:], start=1):
-        left = [vec[x] for x in bars[max(0, i - WINDOW):i]]
-        right = [vec[x] for x in bars[i:i + WINDOW]]
-        lm = [mean(c) for c in zip(*left)]
-        rm = [mean(c) for c in zip(*right)]
-        score = sum(abs(x - y) for x, y in zip(lm, rm)) / (2 * n)
+        diffs = []
+        for t in present:
+            lm = window_mean(t["id"], max(0, i - WINDOW), i)
+            rm = window_mean(t["id"], i, i + WINDOW)
+            mix = sum(abs(x - y) for x, y in zip(lm[2:], rm[2:])) / 2
+            diffs.append(max(abs(lm[0] - rm[0]), abs(lm[1] - rm[1]), mix))
+        score = 0.6 * max(diffs) + 0.4 * mean(diffs)
         edge = bar_start(b, bpb)
-        clip_edges = sum(1 for t in tracks for c in t["clips"]
+        clip_edges = sum(1 for t in present for c in t["clips"]
                          if not c.get("muted") and (abs(c["start"] - edge) < 0.05 or abs(c["end"] - edge) < 0.05))
         scores[b] = score + min(0.45, 0.15 * clip_edges)
     chosen = [bars[0]]
@@ -134,7 +153,7 @@ def _rhythm_changes(t, rows, bars, letters_r):
             continue
         if t["kind"] == "midi":
             if prev is not None and letters_r[b] != letters_r[prev] and \
-                    _jaccard(r["rhythm"], rows[prev]["rhythm"]) < 0.6:
+                    rhythm_changed(r["rhythm"], rows[prev]["rhythm"]):
                 out.append({"bar": b, "onsets_per_bar": [len(rows[prev]["rhythm"]), len(r["rhythm"])]})
         elif r["onsets"] is not None and prev is not None and rows[prev]["onsets"] is not None:
             a0, a1 = rows[prev]["onsets"], r["onsets"]

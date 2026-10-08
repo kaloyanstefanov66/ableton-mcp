@@ -99,6 +99,12 @@ class Pulse:
     nominal: list[float] = field(default_factory=list)
     actual: list[float] = field(default_factory=list)
     skipped: int = 0
+    quality: list[bool] = field(default_factory=list)  # per anchor: fits the pulse cleanly
+
+    def region_confidence(self, lo: float, hi: float) -> float:
+        """Share of clean anchors among those played between beats lo and hi."""
+        q = [ok for a, ok in zip(self.actual, self.quality) if lo <= a <= hi]
+        return round(sum(q) / len(q), 2) if q else 0.0
 
     def _map(self, v: float, src: list[float], dst: list[float]) -> float:
         if len(src) < 2:
@@ -125,32 +131,56 @@ def _moving_median(xs: list[float], width: int = 5) -> list[float]:
     return [median(xs[max(0, i - h):i + h + 1]) for i in range(len(xs))]
 
 
-def estimate_pulse(onsets: list[float], project_bpm: float, min_onsets: int = 8) -> Pulse | None:
+MERGE_BEATS = 0.18  # attacks closer than this are one event (pick noise + note, flams)
+
+
+def _merge(onsets: list[float], strengths: list[float] | None) -> list[float]:
+    pairs = sorted(zip(onsets, strengths or [1.0] * len(onsets)))
+    out: list[tuple[float, float]] = []
+    for t, s in pairs:
+        if out and t - out[-1][0] < MERGE_BEATS:
+            if s > out[-1][1]:
+                out[-1] = (t, s)  # keep the stronger attack of the cluster
+            continue
+        out.append((t, s))
+    return [t for t, _ in out]
+
+
+def _explained(gaps: list[float], u: float) -> float:
+    """Share of gaps that are a whole number of ticks u (within 20%)."""
+    ok = sum(1 for g in gaps if g / u >= 0.8 and abs(g / u - round(g / u)) < 0.2)
+    return ok / len(gaps)
+
+
+def estimate_pulse(onsets: list[float], project_bpm: float, min_onsets: int = 8,
+                   strengths: list[float] | None = None) -> Pulse | None:
     """Infer the performed pulse from onset times (beats at the project tempo).
 
-    1. Find the smallest common inter-onset gap (the tick).
+    1. Merge attacks closer than MERGE_BEATS (keeping the strongest) and pick the tick: the
+       largest common gap that explains most gaps as whole multiples.
     2. Walk the onsets, assigning each an integer tick index (gaps of n ticks count n),
        adapting the tick length as the player drifts. Onsets closer than ~0.6 ticks are
        ornaments and ignored.
     3. Fit a line for the performed tempo, snap the tick to the nearest musical value, and
        keep a smoothed per-pulse offset so mapping follows drift but not jitter.
     """
-    b: list[float] = []
-    for t in sorted(onsets):
-        if not b or t - b[-1] >= 0.08:
-            b.append(t)
+    b = _merge(onsets, strengths)
     if len(b) < min_onsets:
         return None
     gaps = [y - x for x, y in zip(b, b[1:])]
-    cand = sorted(g for g in gaps if 0.15 <= g <= 1.5)
+    cand = sorted(g for g in gaps if 0.2 <= g <= 1.5)
     if len(cand) < min_onsets // 2:
         return None
     support = {g: sum(1 for h in cand if abs(h - g) <= 0.08 * g) for g in cand}
-    need = max(3, 0.2 * len(cand))
-    seed = min((g for g in cand if support[g] >= need), default=max(cand, key=support.get))
-    u = median(h for h in cand if abs(h - seed) <= 0.08 * seed)
+    centers = sorted({round(median(h for h in cand if abs(h - g) <= 0.08 * g), 3)
+                      for g in cand if support[g] >= max(3, 0.1 * len(cand))})
+    if not centers:
+        centers = [median(cand)]
+    scored = [(c, _explained(gaps, c)) for c in centers]
+    best = max(s for _, s in scored)
+    u = max(c for c, s in scored if s >= min(0.75, best - 0.05))
 
-    ks, kept, good, total, skipped = [0], [b[0]], 0, 0, 0
+    ks, kept, gap_ok, skipped = [0], [b[0]], [True], 0
     for t in b[1:]:
         gap = t - kept[-1]
         ratio = gap / u
@@ -159,13 +189,13 @@ def estimate_pulse(onsets: list[float], project_bpm: float, min_onsets: int = 8)
             continue
         n = max(1, round(ratio))
         err = abs(ratio - n)
-        total += 1
-        good += err < 0.2
+        # Long gaps (sustained chords) make the tick count a guess unless they divide cleanly.
+        gap_ok.append(err < (0.35 if n <= 2 else 0.2))
         ks.append(ks[-1] + n)
         kept.append(t)
         if err < 0.2:
             u = 0.85 * u + 0.15 * (gap / n)
-    if total == 0:
+    if len(kept) < min_onsets:
         return None
     k_mean, t_mean = sum(ks) / len(ks), sum(kept) / len(kept)
     var = sum((k - k_mean) ** 2 for k in ks)
@@ -174,12 +204,16 @@ def estimate_pulse(onsets: list[float], project_bpm: float, min_onsets: int = 8)
     tick, label = min(NOMINAL_TICKS, key=lambda x: abs(math.log(slope / x[0])))
     resid = _moving_median([t - (intercept + slope * k) for k, t in zip(ks, kept)])
     actual = [intercept + slope * k + r for k, r in zip(ks, resid)]
+    # An anchor is clean when it sits near the smoothed pulse (jitter < 1/4 tick) and the gap
+    # leading to it was an unambiguous number of ticks.
+    quality = [ok and abs(t - a) < 0.25 * slope for t, a, ok in zip(kept, actual, gap_ok)]
     g0 = round(kept[0] / tick) * tick
     nominal = [g0 + k * tick for k in ks]
-    confidence = (good / total) * min(1.0, len(kept) / 16)
+    confidence = (sum(quality) / len(quality)) * min(1.0, len(kept) / 16)
     return Pulse(tick=tick, tick_label=label, performed_tick=slope,
                  performed_bpm=project_bpm * tick / slope, project_bpm=project_bpm,
-                 confidence=round(confidence, 2), nominal=nominal, actual=actual, skipped=skipped)
+                 confidence=round(confidence, 2), nominal=nominal, actual=actual, skipped=skipped,
+                 quality=quality)
 
 
 def timing_report(pulse: Pulse | None, bar_of, bpb: float) -> dict:
@@ -197,10 +231,26 @@ def timing_report(pulse: Pulse | None, bar_of, bpb: float) -> dict:
     summary = (f"played at ~{pulse.performed_bpm:.1f} BPM vs project {pulse.project_bpm:g} "
                f"({pct:+.1f}%), pulse {pulse.tick_label}; ends {abs(end_drift)} ms "
                f"{'ahead of' if end_drift < 0 else 'behind'} Live's grid")
+    # Clean vs unclear stretches, so Claude can follow the clear part of a take.
+    bar_q: dict[int, list[bool]] = {}
+    for a, ok in zip(pulse.actual, pulse.quality):
+        bar_q.setdefault(bar_of(a), []).append(ok)
+    regions: list[dict] = []
+    for x in sorted(bar_q):
+        clear = sum(bar_q[x]) / len(bar_q[x]) >= FOLLOW_MIN_CONFIDENCE
+        if regions and regions[-1]["followable"] == clear and regions[-1]["bars"][1] >= x - 1:
+            regions[-1]["bars"][1] = x
+            regions[-1]["_q"] += bar_q[x]
+        else:
+            regions.append({"bars": [x, x], "followable": clear, "_q": list(bar_q[x])})
+    for r in regions:
+        r["confidence"] = round(sum(r["_q"]) / len(r["_q"]), 2)
+        del r["_q"]
     return {"available": True, "performed_bpm": round(pulse.performed_bpm, 1),
             "project_bpm": pulse.project_bpm, "tempo_deviation_pct": round(pct, 1),
             "pulse": pulse.tick_label, "confidence": pulse.confidence,
             "followable": pulse.confidence >= FOLLOW_MIN_CONFIDENCE,
+            "regions": regions,
             "drift_ms": {"bars": bars, "ms": drift_ms, "legend": "negative = ahead of the grid"},
             "max_drift_ms": worst, "summary": summary}
 

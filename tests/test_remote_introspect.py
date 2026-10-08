@@ -94,6 +94,9 @@ def test_song_view_and_missing_attributes():
     v = ix.song_view(s)
     assert [c["name"] for c in v["locators"]] == ["Intro", "Chorus"]  # sorted by time
     assert v["key"] == {"root": 2, "scale": "Minor"}
+    s.scale_mode = False  # Live's default C Major with Scale Mode off is not a key
+    assert "key" not in ix.song_view(s)
+    del s.scale_mode
     del s.root_note  # older Live: no key info
     assert "key" not in ix.song_view(s)
     bare = Track("Bare", "audio", routing=False)
