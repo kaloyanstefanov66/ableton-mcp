@@ -1,9 +1,9 @@
 [project]
 name = "ableton-mcp"
 version = "0.1.0"
-description = "MCP server that lets Claude understand and edit Ableton Live sets: structure, mixer, devices, MIDI/audio analysis, timing-aware part writing (Live Lite included)"
+description = "MCP server that lets Claude build backing tracks in Ableton Live: drums and bass that lock to your own recordings (Live 10-12, any edition)"
 license = { text = "MIT" }
-keywords = ["mcp", "ableton", "ableton-live", "claude", "midi", "music"]
+keywords = ["mcp", "ableton", "ableton-live", "claude", "midi", "music", "backing-track", "drums"]
 readme = "README.md"
 # basic-pitch uses the lightweight ONNX runtime on Windows only below Python 3.11;
 # on 3.11+ it pulls in TensorFlow instead.

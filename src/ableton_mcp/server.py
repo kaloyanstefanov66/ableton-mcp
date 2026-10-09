@@ -1,4 +1,4 @@
-"""MCP server exposing Ableton Live (incl. Lite) to Claude."""
+"""MCP server that lets Claude build backing tracks in Ableton Live (10-12, any edition)."""
 from __future__ import annotations
 
 import functools
@@ -21,7 +21,9 @@ from .worker import run_jobs
 EXPORT_DIR = Path(__file__).resolve().parents[2] / "exports"
 
 INSTRUCTIONS = """\
-Understands and edits the user's Ableton Live 12 **Lite** set through a Remote Script.
+Builds backing tracks (drums, bass, other parts) around the user's own recordings in
+Ableton Live 10, 11 or 12 (any edition) through a Remote Script. Typical job: the user records
+a riff; you read its timing, key and structure, then write parts that lock to it.
 
 Understand before editing
 - get_project_state: the whole set (tempo, key, locators, tracks with role/mixer/devices).
@@ -49,8 +51,13 @@ Writing
 - Polyphonic guitar transcription is approximate: trust onsets, lowest notes and per-bar
   pitch classes more than individual notes.
 
-Lite limits: capped track/scene counts, no Max for Live, a small instrument library. If a
-create call fails because of a limit, tell the user rather than retrying.
+Versions and editions: get_project_state shows live_version and live_features.
+- arrangement_write "native" (Live 12) or "via_session" (Live 11): Arrangement clips work.
+  None (Live 10): write_midi_part puts the part in a Session slot instead; say so.
+- arrangement_clips false (Live 10): only Session clips are visible to the analysis tools.
+- note_api "legacy" (Live 10): note probability is ignored.
+- Intro and Lite cap track/scene counts and ship a smaller library. If a create call fails
+  because of a limit, tell the user rather than retrying. No tool needs Max for Live.
 """
 
 mcp = MCPServer("ableton", instructions=INSTRUCTIONS)

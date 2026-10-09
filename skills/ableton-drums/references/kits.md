@@ -1,6 +1,9 @@
-# Kits in Live 12 Lite (Core Library)
+# Kits in Live's Core Library
 
-Always confirm pads with `get_track_state` after loading. Notes below are the stock layouts.
+These are in Live 12's Core Library (every edition, Intro and Lite included). Live 10 and 11
+ship different kits, and Standard/Suite add more through packs: if a name below isn't found,
+`search_browser("kit", categories=["drums"])` and pick by character. Always confirm pads with
+`get_track_state` after loading. Notes below are the stock layouts.
 
 | Kit | Character | Good for |
 |---|---|---|
@@ -20,6 +23,6 @@ Always confirm pads with `get_track_state` after loading. Notes below are the st
 43 Tom Low · 44 Hihat Pedal · 45 Tom Mid · 46 Hihat Open · 47 Tom Hi · 48 Crash 1 · 49 Crash 2 ·
 50 Ride · 51 Conga
 
-Lite has no kits with real double-pedal articulation. For metal double-kick, use the same kick pad
+The Core Library has no kits with real double-pedal articulation. For metal double-kick, use the same kick pad
 at slightly alternating velocities (e.g. 112/104) so 16ths don't sound like a machine gun.
 Dry kits need space: suggest raising the drum track's send to a reverb return.

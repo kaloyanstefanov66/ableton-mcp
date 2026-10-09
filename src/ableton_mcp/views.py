@@ -137,6 +137,7 @@ def project(snap: dict, detail: str = "summary") -> dict:
     bpb = beats_per_bar(s["signature"])
     song = {
         "live_version": snap.get("live_version"),
+        "live_features": snap.get("features"),
         "tempo": s["tempo"],
         "time_signature": "%d/%d" % tuple(s["signature"]),
         "key": _key(s),

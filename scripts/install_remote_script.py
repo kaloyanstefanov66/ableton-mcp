@@ -1,7 +1,9 @@
 """Copy the ClaudeMCP Remote Script into Ableton's User Library.
 
-Live 11+ loads user control surface scripts from
+Live 10.1.13 and later (11, 12) load user control surface scripts from
     <User Library>/Remote Scripts/<Name>/
+Older Live 10 builds only read the "MIDI Remote Scripts" folder inside the Live application;
+copy remote_script/ClaudeMCP there by hand for those.
 The default User Library is Documents/Ableton/User Library on Windows and
 ~/Music/Ableton/User Library on macOS; pass a path to use another one:
     python scripts/install_remote_script.py "D:/Ableton/User Library"

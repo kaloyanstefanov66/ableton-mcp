@@ -1,7 +1,8 @@
 """Read-only views of Live Object Model objects, shaped for the MCP server.
 
 Pure functions over LOM objects (no `import Live`), so they can be unit-tested with stubs.
-Every attribute read is guarded: Lite and older Live versions lack some properties.
+Every attribute read is guarded: older Live versions (and some editions) lack some properties.
+Keep this file Python 2.7 compatible (Live 10).
 
 Stable string IDs (positional - valid until tracks/devices are added or removed):
     t3            track 3            r0  return track A      m  master
@@ -12,6 +13,8 @@ Stable string IDs (positional - valid until tracks/devices are added or removed)
     <device>/p5   device parameter   t3/mx/vol, t3/mx/pan, t3/mx/send0, t3/mx/on
 """
 from __future__ import absolute_import, print_function, unicode_literals
+
+from . import compat
 
 DEVICE_TYPES = {0: "unknown", 1: "instrument", 2: "audio_effect", 4: "midi_effect"}
 AUTOMATION_STATES = {1: "automated", 2: "overridden"}
@@ -85,7 +88,7 @@ def resolve_clip(song, cid):
             raise ValueError("%s is empty" % cid)
         return slots[i].clip
     if token.startswith("a"):
-        clips = list(g(track, "arrangement_clips", []) or [])
+        clips = compat.arrangement_clips(track)
         i = _index(token, "a")
         if not 0 <= i < len(clips):
             raise IndexError("%s does not exist (%s has %d arrangement clips)"
@@ -360,7 +363,7 @@ def track_view(song, track, tid, kind, clips=True):
                 session.append(clip_brief(cs.clip, "%s/s%d" % (tid, si)))
         d["session_clips"] = session
         d["arrangement_clips"] = [clip_brief(c, "%s/a%d" % (tid, ai))
-                                  for ai, c in enumerate(g(track, "arrangement_clips", []) or [])]
+                                  for ai, c in enumerate(compat.arrangement_clips(track))]
         playing = g(track, "playing_slot_index", -1)
         if playing is not None and playing >= 0:
             d["playing_slot"] = playing
@@ -413,9 +416,7 @@ def song_view(song):
 
 def notes_compact(clip):
     """[[pitch, start, duration, velocity, muted]] sorted by time."""
-    notes = clip.get_notes_extended(0, 128, 0.0, 1.0e6)
-    out = [[int(n.pitch), r4(n.start_time), r4(n.duration), r4(n.velocity), 1 if n.mute else 0]
-           for n in notes]
+    out = [[p, r4(st), r4(d), r4(v), 1 if m else 0] for p, st, d, v, m, _ in compat.read_notes(clip)]
     out.sort(key=lambda n: (n[1], n[0]))
     return out
 

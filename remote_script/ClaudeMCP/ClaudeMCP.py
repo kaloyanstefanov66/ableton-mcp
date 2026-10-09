@@ -1,4 +1,7 @@
-"""Claude MCP bridge - an Ableton Live Remote Script (works in Live Lite).
+"""Claude MCP bridge - an Ableton Live Remote Script.
+
+Runs on Live 10 (Python 2.7), 11 and 12, any edition. Version differences live in compat.py;
+keep this file Python 2.7 compatible (no f-strings, annotations or keyword-only args).
 
 Listens on 127.0.0.1:9890 for newline-delimited JSON requests:
     {"id": 1, "cmd": "get_session", "args": {}}
@@ -12,14 +15,19 @@ API is not thread safe.
 from __future__ import absolute_import, print_function, unicode_literals
 
 import json
-import queue
 import socket
 import threading
 import traceback
 
+try:
+    import queue
+except ImportError:  # Python 2 (Live 10)
+    import Queue as queue
+
 import Live
 from _Framework.ControlSurface import ControlSurface
 
+from . import compat
 from . import introspect as ix
 
 HOST = "127.0.0.1"
@@ -31,6 +39,8 @@ BROWSER_ROOTS = (
     "packs", "user_library", "current_project", "samples", "clips", "plugins",
 )
 SEARCH_VISIT_LIMIT = 6000
+# socket.error is a separate class on Python 2; on Python 3 it is OSError.
+SOCKET_ERRORS = (socket.error, OSError)
 
 
 class ClaudeMCP(ControlSurface):
@@ -72,7 +82,7 @@ class ClaudeMCP(ControlSurface):
                 conn, _ = self._server.accept()
             except socket.timeout:
                 continue
-            except OSError:
+            except SOCKET_ERRORS:
                 break
             with self._clients_lock:
                 self._clients.add(conn)
@@ -93,14 +103,14 @@ class ClaudeMCP(ControlSurface):
                     if line.strip():
                         response = self._submit(line)
                         conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
-        except (OSError, ValueError):
+        except SOCKET_ERRORS + (ValueError,):
             pass
         finally:
             with self._clients_lock:
                 self._clients.discard(conn)
             try:
                 conn.close()
-            except OSError:
+            except SOCKET_ERRORS:
                 pass
 
     def _submit(self, line):
@@ -143,13 +153,13 @@ class ClaudeMCP(ControlSurface):
         if self._server is not None:
             try:
                 self._server.close()
-            except OSError:
+            except SOCKET_ERRORS:
                 pass
         with self._clients_lock:
             for conn in list(self._clients):
                 try:
                     conn.close()
-                except OSError:
+                except SOCKET_ERRORS:
                     pass
             self._clients.clear()
         while True:
@@ -183,7 +193,7 @@ class ClaudeMCP(ControlSurface):
 
     def _clip(self, track, slot=None, arrangement_index=None):
         if arrangement_index is not None:
-            clips = list(self._track(track).arrangement_clips)
+            clips = compat.arrangement_clips(self._track(track))
             if not 0 <= arrangement_index < len(clips):
                 raise IndexError("track %d has %d arrangement clips" % (track, len(clips)))
             return clips[arrangement_index]
@@ -248,12 +258,9 @@ class ClaudeMCP(ControlSurface):
             for si, cs in enumerate(t.clip_slots):
                 if cs.has_clip and cs.clip == clip:
                     return {"track": ti, "slot": si}
-            try:
-                for ai, c in enumerate(t.arrangement_clips):
-                    if c == clip:
-                        return {"track": ti, "arrangement_index": ai}
-            except Exception:
-                pass
+            for ai, c in enumerate(compat.arrangement_clips(t)):
+                if c == clip:
+                    return {"track": ti, "arrangement_index": ai}
         return None
 
     def _undo_step(self):
@@ -268,6 +275,7 @@ class ClaudeMCP(ControlSurface):
             "pong": True,
             "live_version": "%d.%d.%d" % (app.get_major_version(), app.get_minor_version(),
                                           app.get_bugfix_version()),
+            "features": compat.features(Live),
         }
 
     def cmd_get_session(self):
@@ -284,12 +292,9 @@ class ClaudeMCP(ControlSurface):
                     c = cs.clip
                     clips.append({"slot": si, "name": c.name, "is_midi": c.is_midi_clip,
                                   "length": c.length})
-            try:
-                arr = [{"arrangement_index": ai, "name": c.name, "is_midi": c.is_midi_clip,
-                        "start_time": c.start_time, "end_time": c.end_time}
-                       for ai, c in enumerate(t.arrangement_clips)]
-            except Exception:
-                arr = []
+            arr = [{"arrangement_index": ai, "name": c.name, "is_midi": c.is_midi_clip,
+                    "start_time": c.start_time, "end_time": c.end_time}
+                   for ai, c in enumerate(compat.arrangement_clips(t))]
             tracks.append({
                 "index": i,
                 "name": t.name,
@@ -330,13 +335,10 @@ class ClaudeMCP(ControlSurface):
                 d["slot"] = si
                 session.append(d)
         arrangement = []
-        try:
-            for ai, c in enumerate(t.arrangement_clips):
-                d = self._clip_summary(c)
-                d["arrangement_index"] = ai
-                arrangement.append(d)
-        except Exception:
-            pass
+        for ai, c in enumerate(compat.arrangement_clips(t)):
+            d = self._clip_summary(c)
+            d["arrangement_index"] = ai
+            arrangement.append(d)
         return {
             "index": track,
             "name": t.name,
@@ -359,15 +361,8 @@ class ClaudeMCP(ControlSurface):
         clip = self._clip(track, slot, arrangement_index)
         if not clip.is_midi_clip:
             raise ValueError("that is an audio clip - transcribe it instead")
-        notes = clip.get_notes_extended(0, 128, 0.0, 1.0e6)
-        out = [{
-            "pitch": n.pitch,
-            "start": n.start_time,
-            "duration": n.duration,
-            "velocity": n.velocity,
-            "mute": n.mute,
-            "probability": n.probability,
-        } for n in notes]
+        out = [{"pitch": p, "start": s, "duration": d, "velocity": v, "mute": m, "probability": pr}
+               for p, s, d, v, m, pr in compat.read_notes(clip)]
         out.sort(key=lambda n: (n["start"], n["pitch"]))
         d = self._clip_summary(clip)
         d["notes"] = out
@@ -424,10 +419,9 @@ class ClaudeMCP(ControlSurface):
 
     def cmd_create_arrangement_clip(self, track, start_time, length, name=None):
         t = self._track(track)
-        if not hasattr(t, "create_midi_clip"):
-            raise RuntimeError("this Live version cannot create arrangement clips from scripts; "
-                               "use a Session View slot instead")
-        clip = t.create_midi_clip(float(start_time), float(length))
+        if not t.has_midi_input:
+            raise ValueError("track %d (%s) is not a MIDI track" % (track, t.name))
+        clip = compat.create_arrangement_midi_clip(self.song(), t, start_time, length)
         if name:
             clip.name = name
         return self._locate_clip(clip)
@@ -438,7 +432,7 @@ class ClaudeMCP(ControlSurface):
             if expect_start is not None and abs(clip.start_time - float(expect_start)) > 1e-3:
                 raise ValueError("arrangement clip %d on track %d starts at %s, expected %s"
                                  % (arrangement_index, track, clip.start_time, expect_start))
-            self._track(track).delete_clip(clip)
+            compat.delete_arrangement_clip(self._track(track), clip)
         else:
             cs = self._clip_slot(track, slot)
             if cs.has_clip:
@@ -477,26 +471,18 @@ class ClaudeMCP(ControlSurface):
                 raise ValueError("note %d: duration must be > 0" % i)
             if start < 0:
                 raise ValueError("note %d: start must be >= 0" % i)
-            specs.append(Live.Clip.MidiNoteSpecification(
-                pitch=pitch,
-                start_time=start,
-                duration=duration,
-                velocity=max(1.0, min(127.0, velocity)),
-                mute=bool(n.get("mute", False)),
-                probability=float(n.get("probability", 1.0)),
-            ))
+            specs.append((pitch, start, duration, max(1.0, min(127.0, velocity)),
+                          bool(n.get("mute", False)), float(n.get("probability", 1.0))))
         with self._undo_step():
             if replace:
-                clip.remove_notes_extended(0, 128, 0.0, 1.0e6)
-            if specs:
-                clip.add_new_notes(tuple(specs))
+                compat.remove_notes(clip)
+            compat.add_notes(Live, clip, specs)
         return {"added": len(specs), "replaced": bool(replace)}
 
     def cmd_remove_notes(self, track, slot=None, arrangement_index=None,
                          from_time=0.0, time_span=1.0e6, from_pitch=0, pitch_span=128):
         clip = self._clip(track, slot, arrangement_index)
-        clip.remove_notes_extended(int(from_pitch), int(pitch_span),
-                                   float(from_time), float(time_span))
+        compat.remove_notes(clip, from_pitch, pitch_span, from_time, time_span)
         return {"removed": True}
 
     def cmd_set_tempo(self, bpm):
@@ -691,7 +677,7 @@ class ClaudeMCP(ControlSurface):
             if kind != "midi" or (track_ids and tid not in track_ids):
                 continue
             clips = []
-            for ai, c in enumerate(ix.g(t, "arrangement_clips", []) or []):
+            for ai, c in enumerate(compat.arrangement_clips(t)):
                 if c.is_midi_clip:
                     d = ix.clip_timing(c)
                     d["id"] = "%s/a%d" % (tid, ai)
