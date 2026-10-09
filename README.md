@@ -7,8 +7,8 @@ key and structure, and writes drums and bass straight into your set, locked to h
 actually played. You don't need a click: if your take speeds up or drifts, the new parts
 follow it.
 
-> "Write Pantera-meets-Deftones drums for my riff starting at bar 94."
-> "Add a bass line that doubles the low notes of the guitar."
+> "Write drums for my riff starting at bar 94."
+> "Add a bass line that follows the low notes of the guitar."
 > "Make the drums less repetitive and build up into the first chug part."
 > "Is my riff in time? Where does it speed up?"
 
